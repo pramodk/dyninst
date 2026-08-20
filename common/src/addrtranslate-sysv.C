@@ -866,7 +866,12 @@ FCNode::FCNode(string f, dev_t d, ino_t i, SymbolReaderFactory *factory_) :
    symreader(NULL),
    factory(factory_)
 {
-   filename = Dyninst::filesystem::canonicalize(std::move(f));
+   // Canonicalizing a procfs link can produce a path that exists only inside
+   // the target's mount namespace.
+   if (f.compare(0, 6, "/proc/") == 0)
+      filename = std::move(f);
+   else
+      filename = Dyninst::filesystem::canonicalize(std::move(f));
 }
 
 string FCNode::getFilename() {

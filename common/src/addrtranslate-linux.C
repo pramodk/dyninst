@@ -36,7 +36,6 @@
 
 #include <elf.h>
 #include <cstdio>
-#include <linux/limits.h>
 
 #include <sys/ptrace.h>
 #include <sys/types.h>
@@ -144,6 +143,13 @@ bool AddressTranslateSysV::setInterpreter()
    }
 
    interp_name = exe->getInterpreter();
+   // Resolve the interpreter through the target root when it is not visible
+   // in the tracer's mount namespace.
+   if (!interp_name.empty() && interp_name[0] == '/') {
+      string rooted = "/proc/" + to_string(pid) + "/root" + interp_name;
+      if (access(rooted.c_str(), R_OK) == 0)
+         interp_name = rooted;
+   }
    interpreter = files.getNode(interp_name, symfactory);
    if (interpreter)
       interpreter->markInterpreter();
@@ -189,7 +195,9 @@ string AddressTranslateSysV::getExecName()
    if (exec_name.empty()) {
       char name[64];
       snprintf(name, 64, "/proc/%d/exe", pid);
-      exec_name = Dyninst::filesystem::canonicalize(name);
+      // Preserve the procfs link so the executable remains reachable when the
+      // target uses a different mount namespace.
+      exec_name = name;
    }
    return exec_name;
 }
