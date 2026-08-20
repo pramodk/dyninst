@@ -38,6 +38,7 @@
 #include "stackwalk/src/sw.h"
 #include "stackwalk/src/libstate.h"
 #include <assert.h>
+#include <map>
 #include "registers/abstract_regs.h"
 
 using namespace Dyninst;
@@ -45,6 +46,76 @@ using namespace Dyninst::Stackwalker;
 using namespace std;
 
 SymbolReaderFactory *Walker::symrfact = NULL;
+
+namespace {
+
+// Bound malformed walks and retain enough recent state to diagnose why the
+// unwinder stopped making progress.
+const size_t max_stackwalk_frames = 4096;
+const size_t anomaly_history_frames = 64;
+
+struct frame_state_t {
+   Address ra;
+   Address sp;
+   Address fp;
+
+   frame_state_t(const Frame &frame) :
+      ra(frame.getRA()), sp(frame.getSP()), fp(frame.getFP())
+   {
+   }
+
+   bool operator<(const frame_state_t &other) const
+   {
+      if (ra != other.ra) return ra < other.ra;
+      if (sp != other.sp) return sp < other.sp;
+      return fp < other.fp;
+   }
+};
+
+void print_anomaly_frame(size_t index, const Frame &frame)
+{
+   string library;
+   Offset offset = 0;
+   void *symtab = NULL;
+   const bool have_library = frame.getLibOffset(library, offset, symtab);
+   FrameStepper *stepper = frame.getStepper();
+
+   fprintf(stderr,
+           "[Dyninst Stackwalker anomaly] frame=%lu tid=%ld ra=0x%lx "
+           "sp=0x%lx fp=0x%lx stepper=%s module=%s offset=0x%lx\n",
+           (unsigned long) index, (long) frame.getThread(),
+           (unsigned long) frame.getRA(), (unsigned long) frame.getSP(),
+           (unsigned long) frame.getFP(),
+           stepper ? stepper->getName() : "<initial>",
+           have_library ? library.c_str() : "<unknown>",
+           (unsigned long) offset);
+}
+
+void dump_stackwalk_anomaly(const char *reason,
+                            const vector<Frame> &stackwalk,
+                            const Frame &candidate,
+                            size_t first_seen)
+{
+   const size_t begin = stackwalk.size() > anomaly_history_frames
+                      ? stackwalk.size() - anomaly_history_frames : 0;
+
+   fprintf(stderr,
+           "[Dyninst Stackwalker anomaly] reason=%s tid=%ld frames=%lu "
+           "first_seen=%ld history_begin=%lu history_count=%lu\n",
+           reason, (long) candidate.getThread(),
+           (unsigned long) stackwalk.size(),
+           first_seen < stackwalk.size() ? (long) first_seen : -1L,
+           (unsigned long) begin,
+           (unsigned long) (stackwalk.size() - begin));
+   for (size_t i = begin; i < stackwalk.size(); ++i)
+      print_anomaly_frame(i, stackwalk[i]);
+
+   fprintf(stderr, "[Dyninst Stackwalker anomaly] candidate\n");
+   print_anomaly_frame(stackwalk.size(), candidate);
+   fflush(stderr);
+}
+
+}
 
 void Walker::version(int& major, int& minor, int& maintenance)
 {
@@ -418,9 +489,11 @@ bool Walker::walkStackFromFrame(std::vector<Frame> &stackwalk,
                                 const Frame &frame)
 {
    bool result;
+   map<frame_state_t, size_t> seen_frames;
 
    stackwalk.clear();
    stackwalk.push_back(frame);
+   seen_frames.insert(make_pair(frame_state_t(frame), 0));
 
    sw_printf("[%s:%d] - walkStackFromFrame called with frame at %lx\n",
              FILE__, __LINE__, stackwalk.back().getRA());
@@ -451,6 +524,30 @@ bool Walker::walkStackFromFrame(std::vector<Frame> &stackwalk,
         result = false;
         goto done;
      }
+
+     // A valid unwind must change at least one of the return address, stack
+     // pointer, or frame pointer before accepting the next frame.
+     frame_state_t candidate_state(cur_frame);
+     map<frame_state_t, size_t>::const_iterator repeated =
+        seen_frames.find(candidate_state);
+     if (repeated != seen_frames.end()) {
+        dump_stackwalk_anomaly("repeated-frame-state", stackwalk,
+                               cur_frame, repeated->second);
+        setLastError(err_internal,
+                     "Stackwalk detected a repeated frame state");
+        result = false;
+        goto done;
+     }
+     if (stackwalk.size() >= max_stackwalk_frames) {
+        dump_stackwalk_anomaly("frame-limit", stackwalk, cur_frame,
+                               stackwalk.size());
+        setLastError(err_internal,
+                     "Stackwalk exceeded the maximum frame count");
+        result = false;
+        goto done;
+     }
+
+     seen_frames.insert(make_pair(candidate_state, stackwalk.size()));
      stackwalk.back().next_stepper = cur_frame.getStepper();
      size_t cur_capa = stackwalk.capacity();
      stackwalk.push_back(cur_frame);     
