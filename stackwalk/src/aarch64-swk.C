@@ -147,12 +147,15 @@ gcframe_ret_t FrameFuncStepperImpl::getCallerFrame(const Frame &in, Frame &out)
   // will be the entry address of C. And if we look up frame type by the return
   // address, we will get information for C rather than A. 
   alloc_frame = helper->allocatesFrame(in.getRA() - 1);
+  const bool try_fp_fallback =
+      alloc_frame.first == FrameFuncHelper::unknown_t &&
+      in.getPrevFrame() != NULL;
   if (alloc_frame.first != FrameFuncHelper::standard_frame) {
       sw_printf("[%s:%d] - alloc_frame.first!=standard_frame (== %x)\n", FILE__, __LINE__, (unsigned int)alloc_frame.first);
       // If we are dealing with the first frame,
       // the frame information is in the register state.
       // We continue this function 
-      if (in.getPrevFrame() != NULL)
+      if (in.getPrevFrame() != NULL && !try_fp_fallback)
           return gcf_not_me;
   }
 
@@ -178,12 +181,44 @@ gcframe_ret_t FrameFuncStepperImpl::getCallerFrame(const Frame &in, Frame &out)
     return gcf_error;
   }
 
+  if (try_fp_fallback) {
+    // AArch64's standard frame record is { previous x29, saved x30 }.
+    // Symbols are not required to consume it, but validate aggressively: a
+    // false positive can turn arbitrary stack data into a plausible call
+    // chain. The stack and frame chain grow toward higher addresses while
+    // unwinding, and public AArch64 interfaces require 16-byte alignment.
+    static const Address max_frame_extent = 64 * 1024 * 1024;
+    LibAddrPair caller_lib;
+    const Address previous_fp = this_frame_pair.FP;
+    const Address saved_ra = this_frame_pair.LR;
+    const bool aligned = !(in_fp & 0xf) && !(previous_fp & 0xf) &&
+                         !(saved_ra & 0x3);
+    const bool frame_progress = previous_fp > in_fp &&
+                                previous_fp - in_fp <= max_frame_extent;
+    const bool stack_contains_fp = in.getSP() && in.getSP() <= in_fp &&
+                                   in_fp - in.getSP() <= max_frame_extent;
+    const bool mapped_caller = saved_ra &&
+        getProcessState()->getLibraryTracker()->getLibraryAtAddr(saved_ra - 1,
+                                                                  caller_lib);
+    if (!aligned || !frame_progress || !stack_contains_fp || !mapped_caller) {
+      return gcf_not_me;
+    }
+    alloc_frame = FrameFuncHelper::alloc_frame_t(
+        FrameFuncHelper::standard_frame, FrameFuncHelper::set_frame);
+  }
+
 
   // Set actual stack frame
   actual_frame_pair_p = &this_frame_pair;
 
   // Handle leaf functions
-  if (FrameFuncHelper::unset_frame == alloc_frame.second)
+  // A function without an x29 frame record cannot have saved its return
+  // address at [x29 + 8]. In particular, leaf wrappers such as
+  // __sched_yield inherit x29 from their caller and keep their return address
+  // in x30. Treat no_frame as authoritative here as a safeguard against an
+  // inconsistent helper result.
+  if (FrameFuncHelper::no_frame == alloc_frame.first ||
+      FrameFuncHelper::unset_frame == alloc_frame.second)
   {
     ra_loc.location = loc_register;
     ra_loc.val.reg = aarch64::x30;
@@ -419,6 +454,8 @@ FrameFuncHelper::alloc_frame_t aarch64_LookupFuncStart::allocatesFrame(Address a
    bool result;
    SymReader *reader;
    Offset off;
+   Offset symbol_offset;
+   unsigned long symbol_size;
    Symbol_t sym;
 
    result = checkCache(addr, res);
@@ -447,7 +484,13 @@ FrameFuncHelper::alloc_frame_t aarch64_LookupFuncStart::allocatesFrame(Address a
       sw_printf("[%s:%d] - Could not find symbol in binary\n", FILE__, __LINE__);
       goto done;
    }
-   func_addr = reader->getSymbolOffset(sym) + lib.second;
+   symbol_offset = reader->getSymbolOffset(sym);
+   symbol_size = reader->getSymbolSize(sym);
+   if (!symbol_size || off < symbol_offset ||
+       off - symbol_offset >= symbol_size) {
+      goto done;
+   }
+   func_addr = symbol_offset + lib.second;
 
    result = proc->readMem(mem, func_addr, FUNCTION_PROLOG_TOCHECK);
    if (!result) {

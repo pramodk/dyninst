@@ -41,6 +41,9 @@
 #include "registers/abstract_regs.h"
 #include "common/h/SymReader.h"
 
+#if defined(os_linux)
+#include "common/src/linuxKludges.h"
+#endif
 #include "stackwalk/src/libstate.h"
 #include "stackwalk/src/sw.h"
 #include "common/src/IntervalTree.h"
@@ -59,10 +62,12 @@ private:
    typedef std::pair<LibAddrPair, Library::ptr> cache_t;
 
    IntervalTree<Address, cache_t> loadedLibs;
+   IntervalTree<Address, LibAddrPair> procMapLibs;
 
    cache_t makeCache(LibAddrPair a, Library::ptr b) { return std::make_pair(a, b); }
    LibAddrPair getLibAddrPair(Library::ptr lib) const;
    bool findInCache(Process::ptr proc, Address addr, LibAddrPair &lib);
+   bool findInProcMaps(Address addr, LibAddrPair &lib);
    void removeLibFromCache(cache_t element);
 
 public:
@@ -479,6 +484,45 @@ bool PCLibraryState::findInCache(Process::ptr proc, Address addr, LibAddrPair &l
    return false;
 }
 
+bool PCLibraryState::findInProcMaps(Address addr, LibAddrPair &lib)
+{
+#if !defined(os_linux)
+   (void) addr;
+   (void) lib;
+   return false;
+#else
+   const PID pid = pdebug->getProcessId();
+   unsigned maps_size = 0;
+   map_entries *maps = getVMMaps(pid, maps_size);
+   if (!maps) {
+      return false;
+   }
+
+   bool found = false;
+   for (unsigned i = 0; i < maps_size; ++i) {
+      const map_entries &entry = maps[i];
+      if (addr < entry.start || addr >= entry.end ||
+          entry.path[0] != '/' || entry.start < entry.offset)
+         continue;
+
+      const string resolved_path = "/proc/" + to_string(pid) + "/root" +
+                                   entry.path;
+      struct stat file_stat;
+      if (stat(resolved_path.c_str(), &file_stat) != 0)
+         continue;
+
+      lib.first = resolved_path;
+      lib.second = entry.start - entry.offset;
+      procMapLibs.insert(entry.start, entry.end, lib);
+      found = true;
+      break;
+   }
+
+   free(maps);
+   return found;
+#endif
+}
+
 void PCLibraryState::removeLibFromCache(cache_t element) {
    IntervalTree<Address, cache_t>::iterator iter = loadedLibs.begin();
 
@@ -585,6 +629,13 @@ bool PCLibraryState::getLibraryAtAddr(Address addr, LibAddrPair &lib)
    }
 
    /**
+    * Reuse a previously resolved /proc maps range before retrying link_map.
+    **/
+   ret = procMapLibs.find(addr, lib);
+   if (ret)
+      return true;
+
+   /**
     * Cache lookup failed. Instead of iterating over every library,
     * look at the link map in memory. This allows us to avoid opening
     * files.
@@ -594,6 +645,15 @@ bool PCLibraryState::getLibraryAtAddr(Address addr, LibAddrPair &lib)
    ret = memoryScan(proc, addr, lib);
    if (ret) {
       return true;
+   }
+
+   // A container's link_map can contain an alias that does not exist in the
+   // tracer or target mount namespace.  /proc/<pid>/maps records the actual
+   // mapped file and offset, so use it as a final source of library identity.
+   if (addr) {
+      ret = findInProcMaps(addr, lib);
+      if (ret)
+         return true;
    }
 
    return false;
@@ -741,6 +801,7 @@ bool PCLibraryState::updateLibraries()
 
 void PCLibraryState::notifyOfUpdate()
 {
+   procMapLibs.clear();
 }
 
 Address PCLibraryState::getLibTrapAddress()
