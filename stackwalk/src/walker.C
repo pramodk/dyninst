@@ -49,7 +49,9 @@ SymbolReaderFactory *Walker::symrfact = NULL;
 
 namespace {
 
-// Retain enough recent state to diagnose why the unwinder stopped making progress.
+// Bound malformed walks and retain enough recent state to diagnose why the
+// unwinder stopped making progress.
+const size_t max_stackwalk_frames = 4096;
 const size_t anomaly_history_frames = 64;
 
 struct frame_state_t {
@@ -536,6 +538,15 @@ bool Walker::walkStackFromFrame(std::vector<Frame> &stackwalk,
         result = false;
         goto done;
      }
+     if (stackwalk.size() >= max_stackwalk_frames) {
+        dump_stackwalk_anomaly("frame-limit", stackwalk, cur_frame,
+                               stackwalk.size());
+        setLastError(err_internal,
+                     "Stackwalk exceeded the maximum frame count");
+        result = false;
+        goto done;
+     }
+
      seen_frames.insert(make_pair(candidate_state, stackwalk.size()));
      stackwalk.back().next_stepper = cur_frame.getStepper();
      size_t cur_capa = stackwalk.capacity();
