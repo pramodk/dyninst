@@ -1,0 +1,4 @@
+add_executable(pac_return_address pac_return_address.cpp)
+target_link_libraries(pac_return_address PRIVATE stackwalk)
+add_test(NAME stackwalk_pac_return_address COMMAND pac_return_address)
+set_tests_properties(stackwalk_pac_return_address PROPERTIES LABELS regression TIMEOUT 5)
