@@ -423,6 +423,7 @@ void Walker::setSymbolReader(SymbolReaderFactory *srf)
     result = false; \
     goto done_gifi; \
   } \
+  frame.setThread(thread); \
   frame.setRA(pc); \
   frame.setFP(fp); \
   frame.setSP(sp); \
@@ -433,7 +434,6 @@ void Walker::setSymbolReader(SymbolReaderFactory *srf)
   frame.setSPLocation(loc); \
   loc.val.reg = Dyninst::FrameBase; \
   frame.setFPLocation(loc); \
-  frame.setThread(thread); \
   frame.markTopFrame(); \
   done_gifi: ; \
 }
@@ -603,6 +603,8 @@ bool Walker::walkSingleFrame(const Frame &in, Frame &out)
    }
 
    out.prev_frame = &in;
+   // Return-address normalization needs the sampled thread before a stepper sets the address.
+   out.setThread(in.getThread());
 
    FrameStepper *last_stepper = NULL;
    for (;;)

@@ -200,6 +200,9 @@ namespace Dyninst { namespace aarch64 {
   DEF_REGISTER(                 wzr,   5 |  D_REG |        SPR | Arch_aarch64);
   DEF_REGISTER(                 xzr,   6 |   FULL |        SPR | Arch_aarch64);
 
+  // Read-only Linux NT_ARM_PAC_MASK metadata, not an architectural register or authentication key.
+  DEF_REGISTER(         pauth_cmask,   7 |   FULL |        SPR | Arch_aarch64);
+
   DEF_REGISTER(                  w0,   0 |  D_REG |        GPR | Arch_aarch64);
   DEF_REGISTER(                  w1,   1 |  D_REG |        GPR | Arch_aarch64);
   DEF_REGISTER(                  w2,   2 |  D_REG |        GPR | Arch_aarch64);

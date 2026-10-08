@@ -31,6 +31,7 @@
 #include "stackwalk/h/swk_errors.h"
 #include "stackwalk/h/procstate.h"
 #include "stackwalk/src/libstate.h"
+#include "registers/aarch64_regs.h"
 #include "common/src/headers.h"
 #include <assert.h>
 #include <string>
@@ -101,6 +102,17 @@ Dyninst::PID ProcessState::getProcessId()
 bool ProcessState::preStackwalk(Dyninst::THR_ID)
 {
    return true;
+}
+
+Address ProcessState::normalizeReturnAddress(Address address, THR_ID thread)
+{
+   if (!address || thread == NULL_THR_ID || getArchitecture() != Arch_aarch64 || isFirstParty())
+      return address;
+   MachRegisterVal mask = 0;
+   // Query the sampled, stopped thread through ProcControl. Do not guess the target's VA width.
+   if (!getRegValue(aarch64::pauth_cmask, thread, mask))
+      return address;
+   return address & ~mask;
 }
 
 bool ProcessState::postStackwalk(Dyninst::THR_ID)

@@ -2381,6 +2381,29 @@ bool linux_thread::plat_getAllRegisters(int_registerPool &regpool)
 
 bool linux_thread::plat_getRegister(Dyninst::MachRegister reg, Dyninst::MachRegisterVal &val)
 {
+#if defined(DYNINST_HOST_ARCH_AARCH64)
+   if (reg == aarch64::pauth_cmask && llproc()->getTargetArch() == Arch_aarch64) {
+      val = 0;
+#if defined(NT_ARM_PAC_MASK)
+      // Use the existing ptrace-owning thread; a second attach is neither needed nor safe here.
+      struct { uint64_t data_mask, instruction_mask; } masks = {};
+      struct iovec io = { &masks, sizeof(masks) };
+      long result = do_ptrace((pt_req) PTRACE_GETREGSET, lwp, (void *) NT_ARM_PAC_MASK, &io);
+      if (result == -1) {
+         // Kernels without user PAC support do not expose this optional regset.
+         if (errno == EINVAL || errno == EIO || errno == ENODEV) return true;
+         setLastError(err_internal, "Could not read instruction PAC mask");
+         return false;
+      }
+      if (io.iov_len != sizeof(masks)) {
+         setLastError(err_internal, "Unexpected instruction PAC mask regset size");
+         return false;
+      }
+      val = masks.instruction_mask;
+#endif
+      return true;
+   }
+#endif
 #if defined(bug_registers_after_exit)
    /* On some kernels, attempting to read registers from a thread in a pre-Exit
     * state causes an oops

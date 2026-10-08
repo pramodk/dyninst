@@ -92,6 +92,9 @@ public:
 
   virtual Dyninst::Architecture getArchitecture() = 0;
 
+  // Strip target instruction PAC bits from a recovered return address, never from target memory.
+  Dyninst::Address normalizeReturnAddress(Dyninst::Address address, Dyninst::THR_ID thread);
+
   virtual ~ProcessState();
 
   Walker *getWalker() const;

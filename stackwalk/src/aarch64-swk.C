@@ -181,6 +181,9 @@ gcframe_ret_t FrameFuncStepperImpl::getCallerFrame(const Frame &in, Frame &out)
     return gcf_error;
   }
 
+  // The fallback validates the saved LR before constructing the output Frame.
+  this_frame_pair.LR = getProcessState()->normalizeReturnAddress(this_frame_pair.LR, in.getThread());
+
   if (try_fp_fallback) {
     // AArch64's standard frame record is { previous x29, saved x30 }.
     // Symbols are not required to consume it, but validate aggressively: a
