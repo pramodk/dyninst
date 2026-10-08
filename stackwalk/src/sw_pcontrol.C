@@ -44,6 +44,7 @@
 #include "stackwalk/src/libstate.h"
 #include "stackwalk/src/sw.h"
 #include "common/src/IntervalTree.h"
+#include "common/src/dyninst_filesystem.h"
 #include <sys/stat.h>
 #include <vector>
 
@@ -426,9 +427,8 @@ LibAddrPair PCLibraryState::getLibAddrPair(Library::ptr lib) const
    const string proc_prefix = "/proc/" + to_string(pdebug->getProcessId()) + "/";
    const bool is_process_path = filename.compare(0, proc_prefix.size(), proc_prefix) == 0;
    if (!filename.empty() && filename[0] == '/' && !is_process_path) {
-      const string rooted = proc_prefix + "root" + filename;
-      struct stat file_stat;
-      if (stat(rooted.c_str(), &file_stat) == 0)
+      const string rooted = Dyninst::filesystem::resolve_in_root(filename, proc_prefix + "root");
+      if (!rooted.empty())
          filename = rooted;
    }
    return LibAddrPair(filename, lib->getLoadAddress());

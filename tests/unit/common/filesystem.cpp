@@ -9,14 +9,16 @@
 #include <string>
 
 static int test_canonicalize();
+static int test_resolve_in_root();
 static int test_exists();
 static int test_replace_extension();
 static int test_append_filename_suffix();
 static int test_strip_all_extensions();
 
 int main() {
-  std::array<int(*)(), 5> tests = {{
+  std::array<int(*)(), 6> tests = {{
       test_canonicalize,
+      test_resolve_in_root,
       test_exists,
       test_replace_extension,
       test_append_filename_suffix,
@@ -31,6 +33,49 @@ int main() {
   }
   std::cout << "failed = " << std::boolalpha << failed << "\n";
   return failed ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+
+int test_resolve_in_root() {
+#ifdef __linux__
+  namespace bf = boost::filesystem;
+  auto const root = bf::temp_directory_path() / bf::unique_path("dyninst-root-%%%%-%%%%-%%%%");
+  auto const library = root / "usr/local/cuda-13.3/compat/lib.real/libcuda.so.610.43.02";
+  bf::create_directories(library.parent_path());
+  bf::create_directories(root / "etc/alternatives");
+  { std::ofstream file(library.string()); file << "test library\n"; }
+  bf::create_symlink("/etc/alternatives/cuda", root / "usr/local/cuda");
+  bf::create_symlink("/usr/local/cuda-13.3", root / "etc/alternatives/cuda");
+  bf::create_symlink("libcuda.so.610.43.02", library.parent_path() / "libcuda.so.1");
+  bf::create_symlink("usr/local/cuda", root / "relative");
+  bf::create_symlink("loop-b", root / "loop-a");
+  bf::create_symlink("loop-a", root / "loop-b");
+  bf::create_symlink("/missing", root / "dangling");
+  // This file exists on the host, but not at that absolute path in the target.
+  bf::create_symlink(library, root / "host-only");
+
+  struct test { std::string input, expected; } const cases[] = {
+      {"/usr/local/cuda/compat/lib.real/libcuda.so.1", library.string()},
+      {"/relative/compat/lib.real/libcuda.so.1", library.string()},
+      {"/../../usr/local/cuda/compat/lib.real/libcuda.so.1", library.string()},
+      {"/usr/local/cuda/../cuda-13.3/compat/lib.real/libcuda.so.1", library.string()},
+      {"/loop-a", ""}, {"/dangling", ""}, {"/host-only", ""},
+      {"relative/compat/lib.real/libcuda.so.1", ""},
+      {"/usr/local/cuda/compat/lib.real/libcuda.so.1/..", ""}
+  };
+  bool failed = false;
+  for(auto const& t : cases) {
+    auto result = Dyninst::filesystem::resolve_in_root(t.input, root.string());
+    if(result != t.expected) {
+      std::cerr << "resolve_in_root(" << t.input << "): expected '" << t.expected
+                << "', got '" << result << "'\n";
+      failed = true;
+    }
+  }
+  bf::remove_all(root);
+  return failed ? EXIT_FAILURE : EXIT_SUCCESS;
+#else
+  return EXIT_SUCCESS;
+#endif
 }
 
 int test_canonicalize() {

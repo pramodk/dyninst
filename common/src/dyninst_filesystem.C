@@ -34,6 +34,7 @@
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/filesystem.hpp>
 #include <cstdlib>
+#include <deque>
 #include <string>
 
 #ifdef os_windows
@@ -173,6 +174,54 @@ std::string canonicalize(std::string path) {
   }
 
   return canonical_path.string();
+}
+
+std::string resolve_in_root(std::string const& path, std::string const& root) {
+  namespace bf = boost::filesystem;
+  bf::path const target(path), root_path(root);
+  boost::system::error_code ec;
+  if(!target.is_absolute() || !root_path.is_absolute() || !bf::is_directory(root_path, ec))
+    return {};
+
+  bf::path resolved = root_path;
+  std::deque<bf::path> pending;
+  auto prepend = [&](bf::path const& value) {
+    auto relative = value.relative_path();
+    pending.insert(pending.begin(), relative.begin(), relative.end());
+  };
+  prepend(target);
+  unsigned links = 0;
+  while(!pending.empty()) {
+    auto component = pending.front();
+    pending.pop_front();
+    if(component == ".")
+      continue;
+    if(component == "..") {
+      if(resolved != root_path)
+        resolved = resolved.parent_path();
+      continue;
+    }
+    auto next = resolved / component;
+    auto status = bf::symlink_status(next, ec);
+    if(ec || !bf::exists(status))
+      return {};
+    if(bf::is_symlink(status)) {
+      if(++links > 40)
+        return {};
+      auto destination = bf::read_symlink(next, ec);
+      if(ec)
+        return {};
+      // Absolute links restart at the target root, not the tracer's '/'.
+      if(destination.is_absolute())
+        resolved = root_path;
+      prepend(destination);
+    } else {
+      if(!pending.empty() && !bf::is_directory(status))
+        return {};
+      resolved = next;
+    }
+  }
+  return resolved.string();
 }
 
 bool exists(std::string const& path) {
